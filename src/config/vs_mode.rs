@@ -1,6 +1,7 @@
 use super::*;
 
 use anyhow::{bail, Result};
+use crossterm::terminal;
 use std::io::Write;
 
 use crate::config::input::Input;
@@ -38,11 +39,18 @@ pub async fn vs_mode_init(
 }
 
 /// Query all VS mode models with the given input and display results
+/// show_selection: true for REPL (interactive), false for non-interactive
 pub async fn ask_vs(
     config: &GlobalConfig,
     input: Input,
     abort_signal: AbortSignal,
+    show_selection: bool,
 ) -> Result<()> {
+    // Don't send empty messages (same as regular REPL)
+    if input.is_empty() {
+        return Ok(());
+    }
+
     let vs_mode = {
         let cfg = config.read();
         cfg.vs_mode.as_ref().cloned()
@@ -55,14 +63,17 @@ pub async fn ask_vs(
     let total_models = vs_mode.models.len();
     let mut responses = Vec::with_capacity(total_models);
 
-    let spinner = crate::utils::spawn_spinner("Generating...");
+    // Use synchronous "Generating..." text instead of async spinner
+    // This avoids race conditions with terminal cursor/clear
+    print!("Generating... ");
+    std::io::stdout().flush()?;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     for (index, model) in vs_mode.models.iter().enumerate() {
         let model = model.clone();
         let input = input.clone();
-        let abort_signal = abort_signal.clone();
+        let _abort_signal = abort_signal.clone();
         let tx = tx.clone();
 
         tokio::spawn(async move {
@@ -74,23 +85,12 @@ pub async fn ask_vs(
             let result = async {
                 let client = model_input.create_client()?;
 
-                let (output, _tool_results) = if model_input.stream() {
-                    crate::client::call_chat_completions_streaming(
-                        &model_input,
-                        client.as_ref(),
-                        abort_signal.clone()
-                    ).await?
-                } else {
-                    crate::client::call_chat_completions(
-                        &model_input,
-                        false,  // print=false - don't print yet
-                        false,
-                        client.as_ref(),
-                        abort_signal.clone()
-                    ).await?
-                };
+                // Call chat completions directly WITHOUT internal spinner
+                // This avoids terminal cursor races with VS mode's own display
+                let output = client.chat_completions(model_input.clone()).await?;
 
-                Ok::<_, anyhow::Error>(output)
+                // Extract just the text from ChatCompletionsOutput
+                Ok::<_, anyhow::Error>(output.text)
             }.await;
 
             let _ = tx.send((index, model.id().to_string(), result));
@@ -103,9 +103,12 @@ pub async fn ask_vs(
     while let Some((_index, model_id, result)) = rx.recv().await {
         completed += 1;
 
-        spinner.stop();
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        println!("[{}/{}] {}:", completed, total_models, model_id);
+        // Clear the "Generating..." line and print header below it
+        println!();
+        let header = format!("--- [{}] {} ---", completed, model_id);
+        let width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
+        let dash_count = width.saturating_sub(header.len());
+        println!("{}{}", header, "-".repeat(dash_count));
 
         match &result {
             Ok(output) => {
@@ -113,20 +116,22 @@ pub async fn ask_vs(
                 config.read().print_markdown(output)?;
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                // Show the real error, not just the context wrapper
+                if let Some(source) = e.source() {
+                    eprintln!("Error: {}: {}", e, source);
+                } else {
+                    eprintln!("Error: {}", e);
+                }
             }
         }
 
         responses.push((completed, model_id, result));
-
-        if completed < total_models {
-            let _ = spinner.set_message("Generating...".to_string());
-        }
     }
 
-    spinner.stop();
-
-    select_response_without_display(config, &input, &responses)?;
+    // Show selection menu only in REPL mode (interactive)
+    if show_selection {
+        select_response_without_display(config, &input, &responses)?;
+    }
 
     Ok(())
 }

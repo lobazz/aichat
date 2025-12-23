@@ -204,10 +204,16 @@ async fn start_directive(
     code_mode: bool,
     abort_signal: AbortSignal,
 ) -> Result<()> {
-    // Check if VS mode is active
-    if config.read().vs_mode.is_some() {
-        // In VS mode, we shouldn't be in command mode
-        bail!("VS mode is only available in interactive REPL mode");
+    // Check if VS mode is active (release lock before awaiting)
+    let is_vs_mode = {
+        let cfg = config.read();
+        cfg.vs_mode.is_some()
+    };
+
+    if is_vs_mode {
+        // VS mode: run all models and show all responses (no selection in non-interactive)
+        crate::config::ask_vs(config, input, abort_signal, false).await?;
+        return Ok(());
     }
 
     let client = input.create_client()?;
