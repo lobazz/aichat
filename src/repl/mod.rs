@@ -9,7 +9,7 @@ use self::prompt::ReplPrompt;
 use crate::client::{call_chat_completions, call_chat_completions_streaming};
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
-    StateFlags,
+    StateFlags, vs_mode_init,
 };
 use crate::render::render_error;
 use crate::utils::{
@@ -31,7 +31,7 @@ use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
+static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
     [
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
@@ -40,7 +40,7 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
             "Modify configuration file",
             AssertState::False(StateFlags::AGENT),
         ),
-        ReplCommand::new(".model", "Switch LLM model", AssertState::pass()),
+        ReplCommand::new(".model", "Switch LLM model", AssertState::False(StateFlags::VS)),
         ReplCommand::new(
             ".prompt",
             "Set a temporary role using a prompt",
@@ -109,7 +109,11 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
             "Exit active session",
             AssertState::True(StateFlags::SESSION_EMPTY | StateFlags::SESSION),
         ),
-        ReplCommand::new(".agent", "Use an agent", AssertState::bare()),
+        ReplCommand::new(
+            ".agent",
+            "Use an agent",
+            AssertState::False(StateFlags::VS),
+        ),
         ReplCommand::new(
             ".starter",
             "Use a conversation starter",
@@ -138,7 +142,7 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
         ReplCommand::new(
             ".edit rag-docs",
             "Add or remove documents from an existing RAG",
-            AssertState::TrueFalse(StateFlags::RAG, StateFlags::AGENT),
+            AssertState::True(StateFlags::RAG),
         ),
         ReplCommand::new(
             ".rebuild rag",
@@ -158,7 +162,7 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
         ReplCommand::new(
             ".exit rag",
             "Leave RAG",
-            AssertState::TrueFalse(StateFlags::RAG, StateFlags::AGENT),
+            AssertState::True(StateFlags::RAG),
         ),
         ReplCommand::new(".macro", "Execute a macro", AssertState::pass()),
         ReplCommand::new(
@@ -182,6 +186,16 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
             ".delete",
             "Delete roles, sessions, RAGs, or agents",
             AssertState::pass(),
+        ),
+        ReplCommand::new(
+            ".vs",
+            "Enter VS mode with multiple models",
+            AssertState::False(StateFlags::AGENT | StateFlags::VS),
+        ),
+        ReplCommand::new(
+            ".exit vs",
+            "Exit VS mode",
+            AssertState::True(StateFlags::VS),
         ),
         ReplCommand::new(".exit", "Exit REPL", AssertState::pass()),
     ]
@@ -673,6 +687,19 @@ pub async fn run_repl_command(
                 };
                 set_text(&output).context("Failed to copy the last chat response")?;
             }
+            ".vs" => {
+                let args = match args {
+                    Some(args) => args,
+                    None => {
+                        println!("Usage: .vs <model1,model2,...> [--side-by-side]");
+                        return Ok(false);
+                    }
+                };
+
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                let models_str = parts[0];
+                vs_mode_init(config, models_str).await?;
+            }
             ".exit" => match args {
                 Some("role") => {
                     config.write().exit_role()?;
@@ -690,6 +717,10 @@ pub async fn run_repl_command(
                 Some("agent") => {
                     config.write().exit_agent()?;
                 }
+                Some("vs") => {
+                    config.write().exit_vs_mode()?;
+                    println!("Exited VS mode");
+                }
                 Some(_) => unknown_command()?,
                 None => {
                     return Ok(true);
@@ -705,7 +736,11 @@ pub async fn run_repl_command(
         },
         None => {
             let input = Input::from_str(config, line, None);
-            ask(config, abort_signal.clone(), input, true).await?;
+            if config.read().vs_mode.is_some() {
+                crate::config::ask_vs(config, input, abort_signal.clone()).await?;
+            } else {
+                ask(config, abort_signal.clone(), input, true).await?;
+            }
         }
     }
 

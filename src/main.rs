@@ -18,7 +18,7 @@ use crate::client::{
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, Config, GlobalConfig, Input,
-    WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
+    WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME, vs_mode_init,
 };
 use crate::render::render_error;
 use crate::repl::Repl;
@@ -135,6 +135,11 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
             Config::use_rag(&config, Some(rag), abort_signal.clone()).await?;
         }
     }
+
+    // Allow VS mode to be initialized along with sessions
+    if let Some(vs_models) = &cli.vs {
+        vs_mode_init(&config, vs_models).await?;
+    }
     if cli.list_sessions {
         let sessions = config.read().list_sessions().join("\n");
         println!("{sessions}");
@@ -199,6 +204,12 @@ async fn start_directive(
     code_mode: bool,
     abort_signal: AbortSignal,
 ) -> Result<()> {
+    // Check if VS mode is active
+    if config.read().vs_mode.is_some() {
+        // In VS mode, we shouldn't be in command mode
+        bail!("VS mode is only available in interactive REPL mode");
+    }
+
     let client = input.create_client()?;
     let extract_code = !*IS_STDOUT_TERMINAL && code_mode;
     config.write().before_chat_completion(&input)?;

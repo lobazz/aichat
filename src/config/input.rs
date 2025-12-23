@@ -159,6 +159,10 @@ impl Input {
         self.patched_text = None;
     }
 
+    pub fn set_role(&mut self, role: Role) {
+        self.role = role;
+    }
+
     pub fn set_text(&mut self, text: String) {
         self.text = text;
     }

@@ -2,6 +2,7 @@ mod agent;
 mod input;
 mod role;
 mod session;
+mod vs_mode;
 
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
@@ -9,6 +10,7 @@ pub use self::role::{
     Role, RoleLike, CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 use self::session::Session;
+pub use self::vs_mode::{vs_mode_init, ask_vs, VsMode};
 
 use crate::client::{
     create_client_config, list_client_types, list_models, ClientConfig, MessageContentToolCalls,
@@ -172,6 +174,8 @@ pub struct Config {
     pub rag: Option<Arc<Rag>>,
     #[serde(skip)]
     pub agent: Option<Agent>,
+    #[serde(skip)]
+    pub vs_mode: Option<VsMode>,
 }
 
 impl Default for Config {
@@ -236,6 +240,7 @@ impl Default for Config {
             session: None,
             rag: None,
             agent: None,
+            vs_mode: None,
         }
     }
 }
@@ -449,6 +454,9 @@ impl Config {
         }
         if self.rag.is_some() {
             flags |= StateFlags::RAG;
+        }
+        if self.vs_mode.is_some() {
+            flags |= StateFlags::VS;
         }
         flags
     }
@@ -2588,6 +2596,7 @@ bitflags::bitflags! {
         const SESSION = 1 << 2;
         const RAG = 1 << 3;
         const AGENT = 1 << 4;
+        const VS = 1 << 5;
     }
 }
 

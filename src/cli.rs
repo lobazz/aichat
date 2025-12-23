@@ -33,6 +33,9 @@ pub struct Cli {
     /// Start a RAG
     #[clap(long)]
     pub rag: Option<String>,
+    /// Start VS mode with multiple models
+    #[clap(long, value_names = ["MODEL1,MODEL2"], help_heading = "VS Mode")]
+    pub vs: Option<String>,
     /// Rebuild the RAG to sync document changes
     #[clap(long)]
     pub rebuild_rag: bool,
