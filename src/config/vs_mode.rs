@@ -11,6 +11,70 @@ pub struct VsMode {
     pub models: Vec<Model>,
 }
 
+type VsResponse = (usize, String, Result<String, anyhow::Error>);
+
+/// Prepare input with the specified model's role
+fn prepare_input_with_model(input: &Input, model: &Model) -> Input {
+    let mut model_input = input.clone();
+    let mut role_with_new_model = model_input.role().clone();
+    role_with_new_model.set_model(model.clone());
+    model_input.set_role(role_with_new_model);
+    model_input
+}
+
+/// Query a single model and return the text response
+async fn query_model(input: Input, model: Model) -> Result<String> {
+    let model_input = prepare_input_with_model(&input, &model);
+    let client = model_input.create_client()?;
+    let output = client.chat_completions(model_input.clone()).await?;
+    Ok(output.text)
+}
+
+/// Print a model response header with terminal-width dashes
+fn print_response_header(index: usize, model_id: &str) {
+    println!();
+    let header = format!("--- [{}] {} ---", index, model_id);
+    let width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
+    let dash_count = width.saturating_sub(header.len());
+    println!("{}{}", header, "-".repeat(dash_count));
+}
+
+/// Display a single model response or error
+fn display_response(config: &GlobalConfig, result: &Result<String, anyhow::Error>) -> Result<()> {
+    match result {
+        Ok(output) => {
+            config.read().print_markdown(output)?;
+        }
+        Err(e) => {
+            if let Some(source) = e.source() {
+                eprintln!("Error: {}: {}", e, source);
+            } else {
+                eprintln!("Error: {}", e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Parse user selection from input string
+fn parse_selection(input: &str, max_value: usize) -> Result<usize> {
+    let trimmed = input.trim();
+
+    if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") {
+        std::process::exit(0);
+    }
+
+    let selection: usize = trimmed
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid selection"))?;
+
+    if selection < 1 || selection > max_value {
+        bail!("Invalid selection");
+    }
+
+    Ok(selection)
+}
+
 /// Initialize VS mode with the specified models
 pub async fn vs_mode_init(
     config: &GlobalConfig,
@@ -43,7 +107,7 @@ pub async fn vs_mode_init(
 pub async fn ask_vs(
     config: &GlobalConfig,
     input: Input,
-    abort_signal: AbortSignal,
+    _abort_signal: AbortSignal,
     show_selection: bool,
 ) -> Result<()> {
     // Don't send empty messages (same as regular REPL)
@@ -73,26 +137,10 @@ pub async fn ask_vs(
     for (index, model) in vs_mode.models.iter().enumerate() {
         let model = model.clone();
         let input = input.clone();
-        let _abort_signal = abort_signal.clone();
         let tx = tx.clone();
 
         tokio::spawn(async move {
-            let mut model_input = input.clone();
-            let mut role_with_new_model = model_input.role().clone();
-            role_with_new_model.set_model(model.clone());
-            model_input.set_role(role_with_new_model);
-
-            let result = async {
-                let client = model_input.create_client()?;
-
-                // Call chat completions directly WITHOUT internal spinner
-                // This avoids terminal cursor races with VS mode's own display
-                let output = client.chat_completions(model_input.clone()).await?;
-
-                // Extract just the text from ChatCompletionsOutput
-                Ok::<_, anyhow::Error>(output.text)
-            }.await;
-
+            let result = query_model(input, model.clone()).await;
             let _ = tx.send((index, model.id().to_string(), result));
         });
     }
@@ -102,29 +150,8 @@ pub async fn ask_vs(
     let mut completed = 0;
     while let Some((_index, model_id, result)) = rx.recv().await {
         completed += 1;
-
-        // Clear the "Generating..." line and print header below it
-        println!();
-        let header = format!("--- [{}] {} ---", completed, model_id);
-        let width = terminal::size().map(|(w, _)| w).unwrap_or(80) as usize;
-        let dash_count = width.saturating_sub(header.len());
-        println!("{}{}", header, "-".repeat(dash_count));
-
-        match &result {
-            Ok(output) => {
-                // Print the output manually
-                config.read().print_markdown(output)?;
-            }
-            Err(e) => {
-                // Show the real error, not just the context wrapper
-                if let Some(source) = e.source() {
-                    eprintln!("Error: {}: {}", e, source);
-                } else {
-                    eprintln!("Error: {}", e);
-                }
-            }
-        }
-
+        print_response_header(completed, &model_id);
+        display_response(config, &result)?;
         responses.push((completed, model_id, result));
     }
 
@@ -141,7 +168,7 @@ pub async fn ask_vs(
 fn select_response_without_display(
     config: &GlobalConfig,
     user_input: &Input,
-    results: &[(usize, String, Result<String, anyhow::Error>)],
+    results: &[VsResponse],
 ) -> Result<()> {
     println!();
 
@@ -162,19 +189,7 @@ fn select_response_without_display(
 
     let mut selection_str = String::new();
     std::io::stdin().read_line(&mut selection_str)?;
-    let selection_str = selection_str.trim();
-
-    if selection_str.eq_ignore_ascii_case("exit") || selection_str.eq_ignore_ascii_case("quit") {
-        std::process::exit(0);
-    }
-
-    let selection: usize = selection_str.parse()
-        .map_err(|_| anyhow::anyhow!("Invalid selection"))?;
-
-    if selection < 1 || selection > display_order.len() {
-        bail!("Invalid selection");
-    }
-
+    let selection = parse_selection(&selection_str, display_order.len())?;
     let selected_display_index = display_order[selection - 1].0;
 
     // Find the result by display index
@@ -201,7 +216,7 @@ fn select_response_without_display(
 
         // Add both user prompt and selected response to conversation history
         let mut cfg = config.write();
-        cfg.after_chat_completion(user_input, &response, &[])?;
+        cfg.after_chat_completion(user_input, response.as_str(), &[])?;
 
         // Update the session's model to the selected one
         if let Some(session) = &mut cfg.session {
