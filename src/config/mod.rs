@@ -120,6 +120,7 @@ pub struct Config {
     pub repl_prelude: Option<String>,
     pub cmd_prelude: Option<String>,
     pub agent_prelude: Option<String>,
+    pub prefill: Option<String>,
 
     pub save_session: Option<bool>,
     pub compress_threshold: usize,
@@ -196,6 +197,7 @@ impl Default for Config {
             repl_prelude: None,
             cmd_prelude: None,
             agent_prelude: None,
+            prefill: None,
 
             save_session: None,
             compress_threshold: 4000,

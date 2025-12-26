@@ -177,7 +177,11 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         return Ok(());
     }
     config.write().apply_prelude()?;
-    match is_repl {
+    // Apply CLI prefill for this request only
+    if let Some(prefill) = &cli.prefill {
+        config.write().prefill = Some(prefill.clone());
+    }
+    let result = match is_repl {
         false => {
             let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
             input.use_embeddings(abort_signal.clone()).await?;
@@ -189,7 +193,12 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
             }
             start_interactive(&config).await
         }
+    };
+    // Clear CLI prefill after the operation completes
+    if cli.prefill.is_some() {
+        config.write().prefill = None;
     }
+    result
 }
 
 #[async_recursion::async_recursion]

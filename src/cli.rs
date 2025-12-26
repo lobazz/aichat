@@ -12,6 +12,9 @@ pub struct Cli {
     /// Use the system prompt
     #[clap(long)]
     pub prompt: Option<String>,
+    /// Assistant message prefill (one-time for CLI)
+    #[clap(long, value_name = "TEXT")]
+    pub prefill: Option<String>,
     /// Select a role
     #[clap(short, long)]
     pub role: Option<String>,

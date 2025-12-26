@@ -201,7 +201,7 @@ impl MessageContentToolCalls {
     }
 }
 
-pub fn patch_messages(messages: &mut Vec<Message>, model: &Model) {
+pub fn patch_messages(messages: &mut Vec<Message>, model: &Model, prefill: Option<&str>) {
     if messages.is_empty() {
         return;
     }
@@ -223,6 +223,13 @@ pub fn patch_messages(messages: &mut Vec<Message>, model: &Model) {
         if let (Some(message), system) = (messages.get_mut(0), system_message.content) {
             message.merge_system(system);
         }
+    }
+    // Add assistant prefill if provided
+    if let Some(prefill) = prefill {
+        messages.push(Message {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text(prefill.to_string()),
+        });
     }
 }
 

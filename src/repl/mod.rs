@@ -31,7 +31,7 @@ use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
+static REPL_COMMANDS: LazyLock<[ReplCommand; 37]> = LazyLock::new(|| {
     [
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
@@ -181,6 +181,11 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
         ReplCommand::new(
             ".delete",
             "Delete roles, sessions, RAGs, or agents",
+            AssertState::pass(),
+        ),
+        ReplCommand::new(
+            ".prefill",
+            "Set/clear assistant prefill",
             AssertState::pass(),
         ),
         ReplCommand::new(".exit", "Exit REPL", AssertState::pass()),
@@ -658,6 +663,21 @@ pub async fn run_repl_command(
                 }
                 _ => {
                     println!("Usage: .delete <role|session|rag|macro|agent-data>")
+                }
+            },
+            ".prefill" => match args {
+                Some(args) => {
+                    if args.trim().is_empty() {
+                        config.write().prefill = None;
+                        println!("Prefill cleared");
+                    } else {
+                        config.write().prefill = Some(args.trim().to_string());
+                        println!("Prefill set to: {}", args.trim());
+                    }
+                }
+                None => {
+                    config.write().prefill = None;
+                    println!("Prefill cleared");
                 }
             },
             ".copy" => {

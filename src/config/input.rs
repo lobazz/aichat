@@ -236,7 +236,8 @@ impl Input {
         stream: bool,
     ) -> Result<ChatCompletionsData> {
         let mut messages = self.build_messages()?;
-        patch_messages(&mut messages, model);
+        let prefill = self.config.read().prefill.clone();
+        patch_messages(&mut messages, model, prefill.as_deref());
         model.guard_max_input_tokens(&messages)?;
         let (temperature, top_p) = (self.role().temperature(), self.role().top_p());
         let functions = self.config.read().select_functions(self.role());
