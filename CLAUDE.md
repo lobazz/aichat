@@ -414,3 +414,27 @@ fn patch_request_data(&self, request_data: &mut RequestData) {
    ```
 
 4. **Model names with special chars**: Forward slashes in model names (e.g., `deepseek-r1`) are automatically escaped in regex matching.
+
+### Debugging Prefill
+
+To debug the prefill feature, use non-stream mode (`-S`) and check `~/.config/aichat/aichat.log`:
+
+```sh
+# Clear log and run with debug logging
+rm ~/.config/aichat/aichat.log
+AICHAT_LOG_LEVEL=debug aichat -S --prefill "I am Claude" "hello"
+
+# View the request in log (shows prefill in request body)
+cat ~/.config/aichat/aichat.log | grep -A3 "Request"
+```
+
+**Note:** `--prefill` must come **before** the prompt text due to `trailing_var_arg = true` in CLI:
+```sh
+# Works:
+aichat --prefill "text" prompt
+
+# Does NOT work (prefill treated as user text):
+aichat prompt --prefill "text"
+```
+
+The log entry shows the full request body with the assistant prefill as an `assistant` role message in the `contents` array.

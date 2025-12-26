@@ -1,6 +1,7 @@
 use super::Model;
 
 use crate::{function::ToolResult, multiline_text, utils::dimmed_text};
+use log::debug;
 
 use serde::{Deserialize, Serialize};
 
@@ -226,6 +227,12 @@ pub fn patch_messages(messages: &mut Vec<Message>, model: &Model, prefill: Optio
     }
     // Add assistant prefill if provided
     if let Some(prefill) = prefill {
+        let display = if prefill.len() > 100 {
+            format!("{}...", &prefill[..100])
+        } else {
+            prefill.to_string()
+        };
+        debug!("Applying prefill: \"{display}\"");
         messages.push(Message {
             role: MessageRole::Assistant,
             content: MessageContent::Text(prefill.to_string()),
