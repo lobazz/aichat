@@ -15,7 +15,13 @@ pub struct VsMode {
     pub models: Vec<Model>,
 }
 
-type VsResponse = (usize, String, Result<String, anyhow::Error>);
+#[derive(Debug)]
+struct ModelResponse {
+    display_index: usize,
+    original_index: usize,
+    model_id: String,
+    result: Result<String, anyhow::Error>,
+}
 
 /// Prompt for VS mode selection using Reedline
 struct SelectionPrompt {
@@ -90,6 +96,78 @@ fn display_response(config: &GlobalConfig, result: &Result<String, anyhow::Error
     Ok(())
 }
 
+enum ParseAction {
+    Retry,
+    Exit,
+    Invalid(String),
+    Select(usize),
+}
+
+/// Parse user selection from input string
+fn parse_selection(input: &str, max_options: usize) -> ParseAction {
+    let trimmed = input.trim();
+
+    if trimmed.is_empty() {
+        return ParseAction::Retry;
+    }
+
+    if matches!(trimmed.to_lowercase().as_str(), "exit" | "quit" | "q") {
+        return ParseAction::Exit;
+    }
+
+    match trimmed.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= max_options => ParseAction::Select(n),
+        Ok(_) => ParseAction::Invalid(format!("Selection out of range (1-{max_options})")),
+        Err(_) => ParseAction::Invalid("Invalid selection".into()),
+    }
+}
+
+/// Read user selection from stdin (interactive or non-interactive)
+fn read_user_selection(interactive: bool, count: usize) -> Result<Option<usize>> {
+    use std::io::{stdin, stdout, Write};
+    
+    if interactive {
+        let prompt = SelectionPrompt::new(count);
+        let mut editor = Reedline::create();
+        loop {
+            match editor.read_line(&prompt) {
+                Ok(Signal::Success(line)) => {
+                    match parse_selection(&line, count) {
+                        ParseAction::Select(n) => return Ok(Some(n)),
+                        ParseAction::Exit => return Ok(None),
+                        ParseAction::Invalid(msg) => eprintln!("Error: {msg}"),
+                        ParseAction::Retry => {}
+                    }
+                }
+                Ok(Signal::CtrlC) => {
+                    println!("(To exit, press Ctrl+D or enter 'q')");
+                }
+                Ok(Signal::CtrlD) => return Ok(None),
+                _ => {}
+            }
+        }
+    } else {
+        loop {
+            print!("Select response [1-{count}] (or 'q' to quit, Ctrl+D to exit): ");
+            stdout().flush()?;
+            let mut input = String::new();
+            match stdin().read_line(&mut input) {
+                Ok(0) => return Ok(None),
+                Ok(_) => {
+                    match parse_selection(&input, count) {
+                        ParseAction::Select(n) => return Ok(Some(n)),
+                        ParseAction::Exit => return Ok(None),
+                        ParseAction::Invalid(msg) => eprintln!("Error: {msg}"),
+                        ParseAction::Retry => {}
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
+                Err(e) => bail!("Failed to read input: {e}"),
+            }
+        }
+    }
+}
+
 /// Initialize VS mode with the specified models
 pub async fn vs_mode_init(
     config: &GlobalConfig,
@@ -118,7 +196,7 @@ pub async fn vs_mode_init(
 }
 
 /// Query all VS mode models with the given input and display results
-/// selection_config: Some(config) for REPL (interactive), None for non-interactive
+/// selection_config: Some(config) enables interactive mode, None uses non-interactive mode
 pub async fn ask_vs(
     config: &GlobalConfig,
     input: Input,
@@ -176,11 +254,16 @@ pub async fn ask_vs(
             // Receive model responses
             result = rx.recv() => {
                 match result {
-                    Some((_index, model_id, response)) => {
-                        completed += 1;
-                        print_response_header(completed, &model_id);
-                        display_response(config, &response)?;
-                        responses.push((completed, model_id, response));
+                Some((_index, model_id, response)) => {
+                    completed += 1;
+                    print_response_header(completed, &model_id);
+                    display_response(config, &response)?;
+                    responses.push(ModelResponse {
+                        display_index: completed,
+                        original_index: _index,
+                        model_id,
+                        result: response,
+                    });
 
                         // Check if all models responded
                         if completed >= total_models {
@@ -221,161 +304,59 @@ pub async fn ask_vs(
 fn select_response_without_display(
     config: &GlobalConfig,
     user_input: &Input,
-    results: &[VsResponse],
+    results: &[ModelResponse],
     selection_config: Option<GlobalConfig>,
 ) -> Result<()> {
     println!();
 
-    let mut display_order = Vec::new();
-    for (display_index, model_id, result) in results {
-        if result.is_ok() {
-            display_order.push((*display_index, model_id.clone()));
-            println!("  [{}] {}", display_index, model_id);
-        }
-    }
+    let valid_responses: Vec<&ModelResponse> = results
+        .iter()
+        .filter(|r| r.result.is_ok())
+        .collect();
 
-    if display_order.is_empty() {
+    if valid_responses.is_empty() {
         bail!("No valid responses to select from");
     }
 
-    match selection_config {
-        Some(_cfg) => {
-            // INTERACTIVE MODE: Use Reedline for full readline support
-            let mut editor = Reedline::create();
-            let prompt = SelectionPrompt::new(display_order.len());
-            
-            loop {
-                match editor.read_line(&prompt) {
-                    Ok(Signal::Success(line)) => {
-                        let trimmed = line.trim();
+    for resp in &valid_responses {
+        println!("  [{}] {}", resp.display_index, resp.model_id);
+    }
 
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-
-                        // Handle exit keywords
-                        if trimmed.eq_ignore_ascii_case("exit")
-                            || trimmed.eq_ignore_ascii_case("quit")
-                            || trimmed.eq_ignore_ascii_case("q")
-                        {
-                            println!("Exiting VS mode selection...");
-                            return Ok(());
-                        }
-
-                        // Parse selection
-                        match trimmed.parse::<usize>() {
-                            Ok(selection) if selection >= 1 && selection <= display_order.len() => {
-                                return handle_selection(config, user_input, results, display_order, selection);
-                            }
-                            _ => {
-                                eprintln!("Invalid selection. Please enter a number between 1 and {} or 'exit'.", display_order.len());
-                            }
-                        }
-                    }
-                    Ok(Signal::CtrlC) => {
-                        println!("(To exit, press Ctrl+D or enter 'q')");
-                        continue;
-                    }
-                    Ok(Signal::CtrlD) => {
-                        println!("\nExiting VS mode selection...");
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
+    let is_interactive = selection_config.is_some();
+    match read_user_selection(is_interactive, valid_responses.len())? {
+        Some(index) => {
+            let selected = valid_responses.get(index - 1)
+                .ok_or_else(|| anyhow::anyhow!("Invalid selection"))?;
+            handle_selection(config, user_input, selected)?;
         }
         None => {
-            // FALLBACK MODE: Use stdin for non-interactive
-            loop {
-                print!("Select response [1-{}] (or 'q' to quit, Ctrl+D to exit): ", display_order.len());
-                std::io::stdout().flush()?;
-
-                let mut selection_str = String::new();
-                match std::io::stdin().read_line(&mut selection_str) {
-                    Ok(0) => {
-                        // Ctrl+D (EOF) - treat as exit
-                        println!("\nExiting VS mode selection...");
-                        return Ok(());
-                    }
-                    Ok(_) => {}
-                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                        // Ctrl+C - treat as exit
-                        println!("\nExiting VS mode selection...");
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        return Err(anyhow::anyhow!("Failed to read input: {}", e));
-                    }
-                }
-
-                let trimmed = selection_str.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-
-                // Handle exit/quit keywords
-                if trimmed.eq_ignore_ascii_case("exit")
-                    || trimmed.eq_ignore_ascii_case("quit")
-                    || trimmed.eq_ignore_ascii_case("q")
-                {
-                    println!("Exiting VS mode selection...");
-                    return Ok(());
-                }
-
-                // Parse selection
-                match trimmed.parse::<usize>() {
-                    Ok(selection) if selection >= 1 && selection <= display_order.len() => {
-                        return handle_selection(config, user_input, results, display_order, selection);
-                    }
-                    _ => {
-                        eprintln!("Invalid selection. Please enter a number between 1 and {} or 'exit'.", display_order.len());
-                    }
-                }
-            }
+            println!("Exiting VS mode selection...");
         }
     }
+    Ok(())
 }
 
 /// Handle a valid selection from the user
 fn handle_selection(
     config: &GlobalConfig,
     user_input: &Input,
-    results: &[VsResponse],
-    display_order: Vec<(usize, String)>,
-    selection: usize,
+    selected: &ModelResponse,
 ) -> Result<()> {
-    let selected_display_index = display_order[selection - 1].0;
+    let response = selected.result.as_ref().unwrap();
 
-    // Find the result by display index
-    let (_, _, result) = results.iter()
-        .find(|(idx, _, _)| *idx == selected_display_index)
-        .ok_or_else(|| anyhow::anyhow!("Selected response not found"))?;
+    let selected_model = {
+        let cfg = config.read();
+        cfg.vs_mode
+            .as_ref()
+            .and_then(|vs| vs.models.get(selected.original_index).cloned())
+            .unwrap_or_else(|| cfg.model.clone())
+    };
 
-    if let Ok(response) = result {
-        // Get the selected model
-        let selected_model = {
-            let cfg = config.read();
-            let vs_mode = cfg.vs_mode.as_ref().unwrap();
+    let mut cfg = config.write();
+    cfg.after_chat_completion(user_input, response, &[])?;
 
-            // Find the original model index by matching the display index
-            let original_index = results.iter()
-                .position(|(idx, _, _)| *idx == selected_display_index)
-                .unwrap_or(0);
-
-            vs_mode.models
-                .get(original_index)
-                .cloned()
-                .unwrap_or_else(|| cfg.model.clone())
-        };
-
-        // Add both user prompt and selected response to conversation history
-        let mut cfg = config.write();
-        cfg.after_chat_completion(user_input, response.as_str(), &[])?;
-
-        // Update the session's model to the selected one
-        if let Some(session) = &mut cfg.session {
-            session.set_model(selected_model);
-        }
+    if let Some(session) = &mut cfg.session {
+        session.set_model(selected_model);
     }
     Ok(())
 }
