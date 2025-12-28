@@ -738,7 +738,7 @@ pub async fn run_repl_command(
             let input = Input::from_str(config, line, None);
             if config.read().vs_mode.is_some() {
                 // REPL mode: show selection menu
-                crate::config::ask_vs(config, input, abort_signal.clone(), true).await?;
+                crate::config::ask_vs(config, input, abort_signal.clone(), Some(config.clone())).await?;
             } else {
                 ask(config, abort_signal.clone(), input, true).await?;
             }

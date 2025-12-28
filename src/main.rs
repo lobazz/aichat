@@ -212,7 +212,7 @@ async fn start_directive(
 
     if is_vs_mode {
         // VS mode: run all models and show all responses (no selection in non-interactive)
-        crate::config::ask_vs(config, input, abort_signal, false).await?;
+        crate::config::ask_vs(config, input, abort_signal, None).await?;
         return Ok(());
     }
 
