@@ -318,8 +318,8 @@ fn select_response_without_display(
         bail!("No valid responses to select from");
     }
 
-    for resp in &valid_responses {
-        println!("  [{}] {}", resp.display_index, resp.model_id);
+    for (idx, resp) in valid_responses.iter().enumerate() {
+        println!("  [{}] {}", idx + 1, resp.model_id);
     }
 
     let is_interactive = selection_config.is_some();
